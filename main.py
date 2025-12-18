@@ -46,26 +46,38 @@ def find_game(team_name):
     return None
 
 def pro_decision(row):
-    """
-    Pro-style ML, Spread, and O/U decision engine
-    """
-    # Moneyline pick
-    ml_pick = row['home_team'] if row['home_win_pct'] >= row['away_win_pct'] else row['away_team']
-    # Override if goal differential strongly favors one team
-    if abs(row['goal_diff_matchup']) > 2:
-        ml_pick = row['home_team'] if row['goal_diff_matchup'] > 0 else row['away_team']
+    """Pro-style ML, Spread, and O/U picks with safe defaults"""
+    try:
+        # Safe numeric defaults
+        home_win_pct = float(row.get('home_win_pct', 0))
+        away_win_pct = float(row.get('away_win_pct', 0))
+        goal_diff = float(row.get('goal_diff_matchup', 0))
+        home_goals = float(row.get('home_Goals_For', 0))
+        away_goals = float(row.get('away_Goals_For', 0))
+        home_puckline = float(row.get('home_puckline', 0))
+        away_puckline = float(row.get('away_puckline', 0))
+        over_under = float(row.get('over_under', 6))
 
-    # Spread pick
-    if ml_pick == row['home_team']:
-        spread_pick = f"{row['home_team']} {row['home_puckline']:+}"
-    else:
-        spread_pick = f"{row['away_team']} {row['away_puckline']:+}"
+        # Moneyline pick
+        ml_pick = row['home_team'] if home_win_pct >= away_win_pct else row['away_team']
+        if abs(goal_diff) > 2:
+            ml_pick = row['home_team'] if goal_diff > 0 else row['away_team']
 
-    # Over/Under pick
-    expected_total = row['home_Goals_For'] + row['away_Goals_For']
-    ou_pick = "Over" if expected_total > row['over_under'] else "Under"
+        # Spread pick
+        if ml_pick == row['home_team']:
+            spread_pick = f"{row['home_team']} {home_puckline:+}"
+        else:
+            spread_pick = f"{row['away_team']} {away_puckline:+}"
 
-    return ml_pick, spread_pick, ou_pick
+        # O/U pick
+        expected_total = home_goals + away_goals
+        ou_pick = "Over" if expected_total > over_under else "Under"
+
+        print(f"Decision engine picks: ML={ml_pick}, Spread={spread_pick}, O/U={ou_pick}")  # Debug
+        return ml_pick, spread_pick, ou_pick
+    except Exception as e:
+        print(f"Error in decision engine: {e}")
+        return "N/A", "N/A", "N/A"
 
 def save_pick(row, ml_pick, spread_pick, ou_pick):
     """Append today's pick to CSV for record keeping."""
@@ -87,7 +99,7 @@ def save_pick(row, ml_pick, spread_pick, ou_pick):
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp():
     incoming = request.values.get("Body", "").strip()
-    print(f"Incoming message: '{incoming}'")  # Debug log
+    print(f"Incoming message: '{incoming}'")  # Debug
 
     resp = MessagingResponse()
     msg = resp.message()
@@ -107,16 +119,19 @@ def whatsapp():
     # Save to CSV
     save_pick(game, ml_pick, spread_pick, ou_pick)
 
-    # Build response
-    response_text = (
-        f"🏒 NHL PICK\n\n"
-        f"{game['away_team']} @ {game['home_team']}\n\n"
-        f"💰 Moneyline: {ml_pick}\n"
-        f"📈 Spread: {spread_pick}\n"
-        f"⚖️ O/U: {ou_pick}"
-    )
+    # Fallback if decision engine failed
+    if ml_pick == "N/A":
+        msg.body("Stats incomplete for this game. Cannot provide a pick.")
+    else:
+        response_text = (
+            f"🏒 NHL PICK\n\n"
+            f"{game['away_team']} @ {game['home_team']}\n\n"
+            f"💰 Moneyline: {ml_pick}\n"
+            f"📈 Spread: {spread_pick}\n"
+            f"⚖️ O/U: {ou_pick}"
+        )
+        msg.body(response_text)
 
-    msg.body(response_text)
     return str(resp)
 
 @app.route("/")
