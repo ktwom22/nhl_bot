@@ -44,32 +44,12 @@ def pro_decision(row):
 
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp():
-    incoming = request.values.get("Body", "").strip()
+    # must return TwiML
     resp = MessagingResponse()
     msg = resp.message()
-
-    game = find_game(incoming)
-
-    if game is None:
-        msg.body(
-            "No game found for that team tonight.\n"
-            "Try texting a team name like:\n"
-            "• Hurricanes\n• Bruins\n• Maple Leafs"
-        )
-        return str(resp)
-
-    ml_pick, spread_pick, ou_pick = pro_decision(game)
-
-    response_text = (
-        f"🏒 NHL PICK\n\n"
-        f"{game['away_team']} @ {game['home_team']}\n\n"
-        f"💰 Moneyline: {ml_pick}\n"
-        f"📈 Spread: {spread_pick}\n"
-        f"⚖️ O/U: {ou_pick}"
-    )
-
-    msg.body(response_text)
+    msg.body("Test message")
     return str(resp)
+
 
 
 @app.route("/")
