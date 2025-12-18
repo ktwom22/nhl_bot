@@ -48,13 +48,21 @@ app = Flask(__name__)
 def index():
     return "NHL Prediction SMS Bot is running. Text a team name to the Twilio number."
 
-@app.route("/sms", methods=['POST'])
+@app.route("/sms", methods=["POST"])
 def sms_reply():
-    incoming_msg = request.form.get('Body', '')
-    response_text = ask_game_prediction(incoming_msg)
+    incoming_msg = request.form.get("Body", "").strip()
+
     resp = MessagingResponse()
-    resp.message(response_text)
+
+    if not incoming_msg:
+        resp.message("Please text a team name, e.g. Carolina Hurricanes")
+        return str(resp)
+
+    reply = ask_game_prediction(incoming_msg)
+    resp.message(reply)
+
     return str(resp)
+
 
 # -----------------------------
 # Run app
