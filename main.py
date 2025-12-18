@@ -30,13 +30,16 @@ for _, row in df.iterrows():
 def ask_game_prediction(team_name):
     key = team_name.lower()
     if key not in game_lookup:
-        return f"No game found for {team_name}"
+        return "No game found for that team tonight."
+
     row = game_lookup[key]
+
     return (
-        f"{row['away_team']} at {row['home_team']}\n"
-        f"Predicted winner: {row['predicted_winner']}\n"
-        f"Predicted puckline (home - away): {row['predicted_spread']}\n"
-        f"Predicted total goals (O/U): {row['predicted_total_goals']}"
+        f"{row['away_team']} @ {row['home_team']}\n"
+        f"Winner: {row['predicted_winner']}\n"
+        f"Spread: {row['predicted_spread']}\n"
+        f"O/U: {row['predicted_total_goals']}"
+
     )
 
 # -----------------------------
