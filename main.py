@@ -58,10 +58,11 @@ def sms_reply():
         resp.message("Please text a team name, e.g. Carolina Hurricanes")
         return str(resp)
 
-    reply = ask_game_prediction(incoming_msg)
-    resp.message(reply)
+    reply_text = ask_game_prediction(incoming_msg)
+    resp.message(reply_text)
 
     return str(resp)
+
 
 
 # -----------------------------
