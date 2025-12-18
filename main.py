@@ -1,75 +1,57 @@
-import pandas as pd
-import numpy as np
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
+import pandas as pd
 
-# -----------------------------
-# Load tonight's games CSV
-# -----------------------------
-df = pd.read_csv("nhl_tonight_model_ready.csv")
-
-# -----------------------------
-# Compute predictions
-# -----------------------------
-df['home_score'] = df['home_goal_diff_pg'] + df['home_implied_prob']
-df['away_score'] = df['away_goal_diff_pg'] + df['away_implied_prob']
-df['predicted_winner'] = np.where(df['home_score'] > df['away_score'],
-                                  df['home_team'], df['away_team'])
-df['predicted_spread'] = (df['home_goal_diff_pg'] - df['away_goal_diff_pg']).round(2)
-df['predicted_total_goals'] = (df['home_GF_pg'] + df['away_GF_pg']).round(1)
-
-# Build lookup dictionary
-game_lookup = {}
-for _, row in df.iterrows():
-    game_lookup[row['home_team'].lower()] = row
-    game_lookup[row['away_team'].lower()] = row
-
-# -----------------------------
-# Prediction function
-# -----------------------------
-def ask_game_prediction(team_name):
-    key = team_name.lower()
-    if key not in game_lookup:
-        return "No game found for that team tonight."
-
-    row = game_lookup[key]
-
-    return (
-        f"{row['away_team']} @ {row['home_team']}\n"
-        f"Winner: {row['predicted_winner']}\n"
-        f"Spread: {row['predicted_spread']}\n"
-        f"O/U: {row['predicted_total_goals']}"
-
-    )
-
-# -----------------------------
-# Flask app
-# -----------------------------
 app = Flask(__name__)
 
-@app.route("/")
-def index():
-    return "NHL Prediction SMS Bot is running. Text a team name to the Twilio number."
+# Load tonight's games (already merged & cleaned)
+df = pd.read_csv("nhl_tonight_model_ready.csv")
 
-@app.route("/sms", methods=["POST"])
-def sms_reply():
-    incoming_msg = request.form.get("Body", "").strip()
+def normalize(text):
+    return text.lower().strip()
 
+def find_game(team_name):
+    team_name = normalize(team_name)
+    for _, row in df.iterrows():
+        if team_name in normalize(row["away_team"]) or team_name in normalize(row["home_team"]):
+            return row
+    return None
+
+@app.route("/whatsapp", methods=["POST"])
+def whatsapp():
+    incoming = request.values.get("Body", "").strip()
     resp = MessagingResponse()
+    msg = resp.message()
 
-    if not incoming_msg:
-        resp.message("Please text a team name, e.g. Carolina Hurricanes")
+    game = find_game(incoming)
+
+    if game is None:
+        msg.body(
+            "I couldn't find that game.\n\n"
+            "Try texting a team name like:\n"
+            "• Hurricanes\n"
+            "• Bruins\n"
+            "• Maple Leafs"
+        )
         return str(resp)
 
-    reply_text = ask_game_prediction(incoming_msg)
-    resp.message(reply_text)
+    winner = game["home_team"] if game["home_win_pct"] > game["away_win_pct"] else game["away_team"]
 
+    response_text = (
+        f"🏒 NHL PICK\n\n"
+        f"{game['away_team']} @ {game['home_team']}\n\n"
+        f"📊 Win %:\n"
+        f"{game['away_team']}: {game['away_win_pct']:.2f}\n"
+        f"{game['home_team']}: {game['home_win_pct']:.2f}\n\n"
+        f"⭐ Lean: {winner}"
+    )
+
+    msg.body(response_text)
     return str(resp)
 
+@app.route("/")
+def home():
+    return "NHL WhatsApp bot is live."
 
-
-# -----------------------------
-# Run app
-# -----------------------------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)  # Render.com prefers non-standard ports
+    app.run(host="0.0.0.0", port=10000)
