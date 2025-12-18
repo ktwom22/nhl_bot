@@ -4,7 +4,7 @@ import pandas as pd
 
 app = Flask(__name__)
 
-# Load tonight's games (already merged & cleaned)
+# Load tonight's games
 df = pd.read_csv("nhl_tonight_model_ready.csv")
 
 def normalize(text):
@@ -27,7 +27,7 @@ def whatsapp():
 
     if game is None:
         msg.body(
-            "I couldn't find that game.\n\n"
+            "No game found for that team tonight.\n"
             "Try texting a team name like:\n"
             "• Hurricanes\n"
             "• Bruins\n"
@@ -35,15 +35,16 @@ def whatsapp():
         )
         return str(resp)
 
-    winner = game["home_team"] if game["home_win_pct"] > game["away_win_pct"] else game["away_team"]
+    # Determine Moneyline pick
+    ml_pick = game["home_team"] if game["home_moneyline"] > game["away_moneyline"] else game["away_team"]
 
     response_text = (
         f"🏒 NHL PICK\n\n"
         f"{game['away_team']} @ {game['home_team']}\n\n"
-        f"📊 Win %:\n"
-        f"{game['away_team']}: {game['away_win_pct']:.2f}\n"
-        f"{game['home_team']}: {game['home_win_pct']:.2f}\n\n"
-        f"⭐ Lean: {winner}"
+        f"💰 Moneyline: {ml_pick}\n"
+        f"📈 Spread: {game['home_team']} {game['home_puckline']} / "
+        f"{game['away_team']} {game['away_puckline']}\n"
+        f"⚖️ O/U: {game['over_under']}"
     )
 
     msg.body(response_text)
@@ -52,8 +53,6 @@ def whatsapp():
 @app.route("/")
 def home():
     return "NHL WhatsApp bot is live."
-
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
