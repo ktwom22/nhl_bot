@@ -19,12 +19,35 @@ def find_game(team_name):
 
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp():
-    incoming = request.values.get("Body", "")
+    incoming = request.values.get("Body", "").strip()
     resp = MessagingResponse()
     msg = resp.message()
-    msg.body("WhatsApp bot is working!")
-    return str(resp)
 
+    game = find_game(incoming)
+
+    if game is None:
+        msg.body(
+            "I couldn't find that game.\n\n"
+            "Try texting a team name like:\n"
+            "• Hurricanes\n"
+            "• Bruins\n"
+            "• Maple Leafs"
+        )
+        return str(resp)
+
+    winner = game["home_team"] if game["home_win_pct"] > game["away_win_pct"] else game["away_team"]
+
+    response_text = (
+        f"🏒 NHL PICK\n\n"
+        f"{game['away_team']} @ {game['home_team']}\n\n"
+        f"📊 Win %:\n"
+        f"{game['away_team']}: {game['away_win_pct']:.2f}\n"
+        f"{game['home_team']}: {game['home_win_pct']:.2f}\n\n"
+        f"⭐ Lean: {winner}"
+    )
+
+    msg.body(response_text)
+    return str(resp)
 
 @app.route("/")
 def home():
