@@ -2,38 +2,73 @@ from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 import pandas as pd
 import os
+import time
+import shutil
+from datetime import date
 
 app = Flask(__name__)
 
 # -----------------------------
 # Config
 # -----------------------------
-INPUT_CSV = "nhl_tonight_model_ready.csv"
-# Use /tmp for Render deployments (writable folder)
+SOURCE_CSV = "nhl_tonight_model_ready.csv"      # where your updater MAY be writing
+INPUT_CSV = "/tmp/nhl_tonight_model_ready.csv"  # runtime copy (Render-safe)
 OUTPUT_CSV = "/tmp/nhl_tonight_picks.csv"
 
-# -----------------------------
-# Load CSV safely
-# -----------------------------
-try:
-    df = pd.read_csv(INPUT_CSV)
-    print(f"Loaded {len(df)} games from {INPUT_CSV}")
-except Exception as e:
-    print(f"Error loading input CSV: {e}")
-    df = pd.DataFrame()  # empty DataFrame to prevent crash
+df = pd.DataFrame()
 
 # -----------------------------
-# Helper functions
+# Helpers
 # -----------------------------
+def today_str():
+    return date.today().strftime("%Y-%m-%d")
+
 def normalize(text):
-    return text.lower().strip()
+    return str(text).lower().strip()
 
+# -----------------------------
+# HARD SYNC + LOAD (NO FILTERING)
+# -----------------------------
+def load_data():
+    global df
+
+    print("\n===== DATA LOAD START =====")
+
+    # Step 1: If source CSV exists, force-copy it into /tmp
+    if os.path.exists(SOURCE_CSV):
+        try:
+            shutil.copyfile(SOURCE_CSV, INPUT_CSV)
+            print("Copied source CSV → /tmp")
+        except Exception as e:
+            print("COPY ERROR:", e)
+
+    # Step 2: Load from /tmp
+    if not os.path.exists(INPUT_CSV):
+        print("NO INPUT CSV FOUND ANYWHERE")
+        df = pd.DataFrame()
+        return
+
+    try:
+        print("CSV last modified:", time.ctime(os.path.getmtime(INPUT_CSV)))
+        df = pd.read_csv(INPUT_CSV)
+        print("Rows loaded:", len(df))
+        print("Columns:", list(df.columns))
+
+    except Exception as e:
+        print("LOAD ERROR:", e)
+        df = pd.DataFrame()
+
+    print("===== DATA LOAD END =====\n")
+
+# -----------------------------
+# Game matching
+# -----------------------------
 def find_game(team_name):
-    """Robust matching: full name, first word, or last word"""
     team_name = normalize(team_name)
+
     for _, row in df.iterrows():
-        away = normalize(row.get('away_team', ''))
-        home = normalize(row.get('home_team', ''))
+        away = normalize(row.get("away_team", ""))
+        home = normalize(row.get("home_team", ""))
 
         if team_name in away or team_name in home:
             return row
@@ -41,93 +76,112 @@ def find_game(team_name):
             return row
         if team_name == away.split()[0] or team_name == home.split()[0]:
             return row
-    print(f"No match found for '{team_name}'")  # debug
+
     return None
 
+# -----------------------------
+# Picks
+# -----------------------------
 def pro_decision(row):
-    """Safe decision engine for ML, Spread, O/U"""
     try:
-        home_win_pct = float(row.get('home_win_pct', 0))
-        away_win_pct = float(row.get('away_win_pct', 0))
-        goal_diff = float(row.get('goal_diff_matchup', 0))
-        home_goals = float(row.get('home_Goals_For', 0))
-        away_goals = float(row.get('away_Goals_For', 0))
-        home_puckline = float(row.get('home_puckline', 0))
-        away_puckline = float(row.get('away_puckline', 0))
-        over_under = float(row.get('over_under', 6))
+        home_win_pct = float(row.get("home_win_pct", 0))
+        away_win_pct = float(row.get("away_win_pct", 0))
+        goal_diff = float(row.get("goal_diff_matchup", 0))
+        home_goals = float(row.get("home_Goals_For", 0))
+        away_goals = float(row.get("away_Goals_For", 0))
+        home_puckline = float(row.get("home_puckline", -1.5))
+        away_puckline = float(row.get("away_puckline", 1.5))
+        over_under = float(row.get("over_under", 6))
 
-        # Moneyline
-        ml_pick = row['home_team'] if home_win_pct >= away_win_pct else row['away_team']
+        ml_pick = row["home_team"] if home_win_pct >= away_win_pct else row["away_team"]
         if abs(goal_diff) > 2:
-            ml_pick = row['home_team'] if goal_diff > 0 else row['away_team']
+            ml_pick = row["home_team"] if goal_diff > 0 else row["away_team"]
 
-        # Spread
-        spread_pick = f"{row['home_team']} {home_puckline:+}" if ml_pick == row['home_team'] else f"{row['away_team']} {away_puckline:+}"
+        spread_pick = (
+            f"{row['home_team']} {home_puckline:+}"
+            if ml_pick == row["home_team"]
+            else f"{row['away_team']} {away_puckline:+}"
+        )
 
-        # O/U
         expected_total = home_goals + away_goals
         ou_pick = "Over" if expected_total > over_under else "Under"
 
-        print(f"Picks: ML={ml_pick}, Spread={spread_pick}, O/U={ou_pick}")
         return ml_pick, spread_pick, ou_pick
+
     except Exception as e:
-        print(f"Error in decision engine: {e}")
+        print("DECISION ERROR:", e)
         return "N/A", "N/A", "N/A"
 
+# -----------------------------
+# Save history
+# -----------------------------
 def save_pick(row, ml_pick, spread_pick, ou_pick):
-    """Append pick to CSV safely"""
-    data = {
-        "away_team": row.get('away_team', ''),
-        "home_team": row.get('home_team', ''),
+    record = {
+        "date": today_str(),
+        "away_team": row.get("away_team", ""),
+        "home_team": row.get("home_team", ""),
         "ml_pick": ml_pick,
         "spread_pick": spread_pick,
         "ou_pick": ou_pick
     }
+
     try:
-        if not os.path.exists(OUTPUT_CSV):
-            pd.DataFrame([data]).to_csv(OUTPUT_CSV, index=False)
+        if os.path.exists(OUTPUT_CSV):
+            hist = pd.read_csv(OUTPUT_CSV)
+
+            duplicate = (
+                (hist["date"] == record["date"]) &
+                (hist["away_team"] == record["away_team"]) &
+                (hist["home_team"] == record["home_team"])
+            )
+
+            if duplicate.any():
+                print("Duplicate pick — skipped")
+                return
+
+            hist = pd.concat([hist, pd.DataFrame([record])])
+            hist.to_csv(OUTPUT_CSV, index=False)
         else:
-            pd.DataFrame([data]).to_csv(OUTPUT_CSV, mode='a', header=False, index=False)
+            pd.DataFrame([record]).to_csv(OUTPUT_CSV, index=False)
+
     except Exception as e:
-        print(f"Error saving picks to CSV: {e}")
+        print("SAVE ERROR:", e)
 
 # -----------------------------
-# Flask routes
+# Routes
 # -----------------------------
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp():
+    load_data()  # FORCE HARD RELOAD
+
     incoming = request.values.get("Body", "").strip()
-    print(f"Incoming message: '{incoming}'")  # debug
+    print("Incoming:", incoming)
 
     resp = MessagingResponse()
     msg = resp.message()
 
+    if df.empty:
+        msg.body("No NHL games loaded yet.")
+        return str(resp)
+
     game = find_game(incoming)
     if game is None:
         msg.body(
-            "No game found for that team tonight.\n"
-            "Try texting a team name like:\n"
-            "• Hurricanes\n• Bruins\n• Maple Leafs"
+            "No game found.\n\n"
+            "Try:\n• Bruins\n• Rangers\n• Maple Leafs"
         )
         return str(resp)
 
-    # Make picks
     ml_pick, spread_pick, ou_pick = pro_decision(game)
-
-    # Save picks
     save_pick(game, ml_pick, spread_pick, ou_pick)
 
-    # Respond
-    if ml_pick == "N/A":
-        msg.body("Stats incomplete for this game. Cannot provide a pick.")
-    else:
-        msg.body(
-            f"🏒 NHL PICK\n\n"
-            f"{game['away_team']} @ {game['home_team']}\n\n"
-            f"💰 Moneyline: {ml_pick}\n"
-            f"📈 Spread: {spread_pick}\n"
-            f"⚖️ O/U: {ou_pick}"
-        )
+    msg.body(
+        f"🏒 NHL PICK\n\n"
+        f"{game['away_team']} @ {game['home_team']}\n\n"
+        f"💰 Moneyline: {ml_pick}\n"
+        f"📈 Spread: {spread_pick}\n"
+        f"⚖️ O/U: {ou_pick}"
+    )
 
     return str(resp)
 
@@ -136,7 +190,7 @@ def home():
     return "NHL WhatsApp bot is live."
 
 # -----------------------------
-# Run Flask app
+# Run
 # -----------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
