@@ -1,87 +1,64 @@
+# file: nhl_bot.py
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 import pandas as pd
 import os
-import time
-import shutil
 from datetime import date
 
 app = Flask(__name__)
 
 # -----------------------------
-# Config
+# Paths (persistent)
 # -----------------------------
-SOURCE_CSV = "nhl_tonight_model_ready.csv"      # where your updater MAY be writing
-INPUT_CSV = "/tmp/nhl_tonight_model_ready.csv"  # runtime copy (Render-safe)
-OUTPUT_CSV = "/tmp/nhl_tonight_picks.csv"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+os.makedirs(DATA_DIR, exist_ok=True)
 
-df = pd.DataFrame()
+INPUT_CSV = os.path.join(DATA_DIR, "nhl_tonight_model_ready.csv")   # Updater writes here
+CURRENT_PICKS_CSV = os.path.join(DATA_DIR, "nhl_tonight_picks.csv") # Picks today
+ARCHIVE_PICKS_CSV = os.path.join(DATA_DIR, "nhl_picks_archive.csv") # Historical archive
 
 # -----------------------------
-# Helpers
+# Date helper
 # -----------------------------
 def today_str():
     return date.today().strftime("%Y-%m-%d")
 
+# -----------------------------
+# Load latest games
+# -----------------------------
+def load_games():
+    if not os.path.exists(INPUT_CSV):
+        print("No games CSV found:", INPUT_CSV)
+        return pd.DataFrame()
+    df = pd.read_csv(INPUT_CSV)
+    # Ensure date column
+    if "game_date" not in df.columns:
+        df["game_date"] = today_str()
+    df["game_date"] = pd.to_datetime(df["game_date"], errors='coerce').dt.date.astype(str)
+    # Filter today only
+    df = df[df["game_date"] == today_str()]
+    return df
+
+# -----------------------------
+# Helpers
+# -----------------------------
 def normalize(text):
     return str(text).lower().strip()
 
-# -----------------------------
-# HARD SYNC + LOAD (NO FILTERING)
-# -----------------------------
-def load_data():
-    global df
-
-    print("\n===== DATA LOAD START =====")
-
-    # Step 1: If source CSV exists, force-copy it into /tmp
-    if os.path.exists(SOURCE_CSV):
-        try:
-            shutil.copyfile(SOURCE_CSV, INPUT_CSV)
-            print("Copied source CSV → /tmp")
-        except Exception as e:
-            print("COPY ERROR:", e)
-
-    # Step 2: Load from /tmp
-    if not os.path.exists(INPUT_CSV):
-        print("NO INPUT CSV FOUND ANYWHERE")
-        df = pd.DataFrame()
-        return
-
-    try:
-        print("CSV last modified:", time.ctime(os.path.getmtime(INPUT_CSV)))
-        df = pd.read_csv(INPUT_CSV)
-        print("Rows loaded:", len(df))
-        print("Columns:", list(df.columns))
-
-    except Exception as e:
-        print("LOAD ERROR:", e)
-        df = pd.DataFrame()
-
-    print("===== DATA LOAD END =====\n")
-
-# -----------------------------
-# Game matching
-# -----------------------------
-def find_game(team_name):
+def find_game(df, team_name):
     team_name = normalize(team_name)
-
     for _, row in df.iterrows():
         away = normalize(row.get("away_team", ""))
         home = normalize(row.get("home_team", ""))
-
         if team_name in away or team_name in home:
             return row
         if team_name == away.split()[-1] or team_name == home.split()[-1]:
             return row
         if team_name == away.split()[0] or team_name == home.split()[0]:
             return row
-
     return None
 
-# -----------------------------
-# Picks
-# -----------------------------
 def pro_decision(row):
     try:
         home_win_pct = float(row.get("home_win_pct", 0))
@@ -103,94 +80,90 @@ def pro_decision(row):
             else f"{row['away_team']} {away_puckline:+}"
         )
 
-        expected_total = home_goals + away_goals
-        ou_pick = "Over" if expected_total > over_under else "Under"
+        ou_pick = "Over" if (home_goals + away_goals) > over_under else "Under"
 
         return ml_pick, spread_pick, ou_pick
-
-    except Exception as e:
-        print("DECISION ERROR:", e)
+    except:
         return "N/A", "N/A", "N/A"
 
 # -----------------------------
-# Save history
+# Save picks (today + archive)
 # -----------------------------
-def save_pick(row, ml_pick, spread_pick, ou_pick):
+def save_pick(row, ml, spread, ou):
     record = {
         "date": today_str(),
         "away_team": row.get("away_team", ""),
         "home_team": row.get("home_team", ""),
-        "ml_pick": ml_pick,
-        "spread_pick": spread_pick,
-        "ou_pick": ou_pick
+        "ml_pick": ml,
+        "spread_pick": spread,
+        "ou_pick": ou
     }
 
-    try:
-        if os.path.exists(OUTPUT_CSV):
-            hist = pd.read_csv(OUTPUT_CSV)
+    # --- Current picks ---
+    if os.path.exists(CURRENT_PICKS_CSV):
+        df_current = pd.read_csv(CURRENT_PICKS_CSV)
+        duplicate = ((df_current["date"] == record["date"]) &
+                     (df_current["away_team"] == record["away_team"]) &
+                     (df_current["home_team"] == record["home_team"]))
+        if not duplicate.any():
+            df_current = pd.concat([df_current, pd.DataFrame([record])])
+            df_current.to_csv(CURRENT_PICKS_CSV, index=False)
+    else:
+        pd.DataFrame([record]).to_csv(CURRENT_PICKS_CSV, index=False)
 
-            duplicate = (
-                (hist["date"] == record["date"]) &
-                (hist["away_team"] == record["away_team"]) &
-                (hist["home_team"] == record["home_team"])
-            )
-
-            if duplicate.any():
-                print("Duplicate pick — skipped")
-                return
-
-            hist = pd.concat([hist, pd.DataFrame([record])])
-            hist.to_csv(OUTPUT_CSV, index=False)
-        else:
-            pd.DataFrame([record]).to_csv(OUTPUT_CSV, index=False)
-
-    except Exception as e:
-        print("SAVE ERROR:", e)
+    # --- Archive picks ---
+    if os.path.exists(ARCHIVE_PICKS_CSV):
+        df_archive = pd.read_csv(ARCHIVE_PICKS_CSV)
+        df_archive = pd.concat([df_archive, pd.DataFrame([record])])
+        df_archive.to_csv(ARCHIVE_PICKS_CSV, index=False)
+    else:
+        pd.DataFrame([record]).to_csv(ARCHIVE_PICKS_CSV, index=False)
 
 # -----------------------------
-# Routes
+# Flask routes
 # -----------------------------
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp():
-    load_data()  # FORCE HARD RELOAD
-
+    df_games = load_games()
     incoming = request.values.get("Body", "").strip()
-    print("Incoming:", incoming)
-
     resp = MessagingResponse()
     msg = resp.message()
 
-    if df.empty:
-        msg.body("No NHL games loaded yet.")
+    if df_games.empty:
+        msg.body("No NHL games loaded for today yet.")
         return str(resp)
 
-    game = find_game(incoming)
+    game = find_game(df_games, incoming)
     if game is None:
         msg.body(
-            "No game found.\n\n"
-            "Try:\n• Bruins\n• Rangers\n• Maple Leafs"
+            "No game found for that team tonight.\nTry:\n• Bruins\n• Rangers\n• Maple Leafs"
         )
         return str(resp)
 
-    ml_pick, spread_pick, ou_pick = pro_decision(game)
-    save_pick(game, ml_pick, spread_pick, ou_pick)
+    ml, spread, ou = pro_decision(game)
+    save_pick(game, ml, spread, ou)
 
     msg.body(
-        f"🏒 NHL PICK\n\n"
+        f"🏒 NHL PICK ({today_str()})\n\n"
         f"{game['away_team']} @ {game['home_team']}\n\n"
-        f"💰 Moneyline: {ml_pick}\n"
-        f"📈 Spread: {spread_pick}\n"
-        f"⚖️ O/U: {ou_pick}"
+        f"💰 Moneyline: {ml}\n"
+        f"📈 Spread: {spread}\n"
+        f"⚖️ O/U: {ou}"
     )
-
     return str(resp)
 
 @app.route("/")
 def home():
     return "NHL WhatsApp bot is live."
 
+@app.route("/archive")
+def archive():
+    if os.path.exists(ARCHIVE_PICKS_CSV):
+        return pd.read_csv(ARCHIVE_PICKS_CSV).tail(50).to_html()
+    return "No historical picks yet."
+
 # -----------------------------
-# Run
+# Run Flask
 # -----------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
