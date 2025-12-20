@@ -32,11 +32,16 @@ def load_games():
         return pd.DataFrame()
     df = pd.read_csv(INPUT_CSV)
     debug(f"CSV loaded: {len(df)} rows")
+
+    # Normalize date column
     if "game_date" not in df.columns:
         df["game_date"] = today_str()
     df["game_date"] = pd.to_datetime(df["game_date"], errors='coerce').dt.date.astype(str)
+
+    # Filter today's games
     df = df[df["game_date"] == today_str()]
     debug(f"Filtered today: {len(df)} rows")
+    debug("Teams today: " + str(df[["away_team","home_team"]].values))
     return df
 
 def normalize(text):
@@ -71,13 +76,11 @@ def pro_decision(row):
             ml_pick = row["home_team"] if goal_diff > 0 else row["away_team"]
 
         spread_pick = (
-            f"{row['home_team']} {home_puckline:+}"
-            if ml_pick == row["home_team"]
+            f"{row['home_team']} {home_puckline:+}" if ml_pick == row["home_team"]
             else f"{row['away_team']} {away_puckline:+}"
         )
 
         ou_pick = "Over" if (home_goals + away_goals) > over_under else "Under"
-
         return ml_pick, spread_pick, ou_pick
     except Exception as e:
         debug("Decision error: " + str(e))
