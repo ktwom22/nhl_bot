@@ -1,4 +1,3 @@
-# file: nhl_bot.py
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 import pandas as pd
@@ -8,41 +7,38 @@ from datetime import date
 app = Flask(__name__)
 
 # -----------------------------
-# Paths (persistent)
+# Paths
 # -----------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
-INPUT_CSV = os.path.join(DATA_DIR, "nhl_tonight_model_ready.csv")   # Updater writes here
-CURRENT_PICKS_CSV = os.path.join(DATA_DIR, "nhl_tonight_picks.csv") # Picks today
-ARCHIVE_PICKS_CSV = os.path.join(DATA_DIR, "nhl_picks_archive.csv") # Historical archive
-
-# -----------------------------
-# Date helper
-# -----------------------------
-def today_str():
-    return date.today().strftime("%Y-%m-%d")
-
-# -----------------------------
-# Load latest games
-# -----------------------------
-def load_games():
-    if not os.path.exists(INPUT_CSV):
-        print("No games CSV found:", INPUT_CSV)
-        return pd.DataFrame()
-    df = pd.read_csv(INPUT_CSV)
-    # Ensure date column
-    if "game_date" not in df.columns:
-        df["game_date"] = today_str()
-    df["game_date"] = pd.to_datetime(df["game_date"], errors='coerce').dt.date.astype(str)
-    # Filter today only
-    df = df[df["game_date"] == today_str()]
-    return df
+INPUT_CSV = os.path.join(DATA_DIR, "nhl_tonight_model_ready.csv")
+CURRENT_PICKS_CSV = os.path.join(DATA_DIR, "nhl_tonight_picks.csv")
+ARCHIVE_PICKS_CSV = os.path.join(DATA_DIR, "nhl_picks_archive.csv")
 
 # -----------------------------
 # Helpers
 # -----------------------------
+def today_str():
+    return date.today().strftime("%Y-%m-%d")
+
+def debug(msg):
+    print("DEBUG:", msg)
+
+def load_games():
+    if not os.path.exists(INPUT_CSV):
+        debug("No games CSV found")
+        return pd.DataFrame()
+    df = pd.read_csv(INPUT_CSV)
+    debug(f"CSV loaded: {len(df)} rows")
+    if "game_date" not in df.columns:
+        df["game_date"] = today_str()
+    df["game_date"] = pd.to_datetime(df["game_date"], errors='coerce').dt.date.astype(str)
+    df = df[df["game_date"] == today_str()]
+    debug(f"Filtered today: {len(df)} rows")
+    return df
+
 def normalize(text):
     return str(text).lower().strip()
 
@@ -83,12 +79,10 @@ def pro_decision(row):
         ou_pick = "Over" if (home_goals + away_goals) > over_under else "Under"
 
         return ml_pick, spread_pick, ou_pick
-    except:
+    except Exception as e:
+        debug("Decision error: " + str(e))
         return "N/A", "N/A", "N/A"
 
-# -----------------------------
-# Save picks (today + archive)
-# -----------------------------
 def save_pick(row, ml, spread, ou):
     record = {
         "date": today_str(),
@@ -99,7 +93,7 @@ def save_pick(row, ml, spread, ou):
         "ou_pick": ou
     }
 
-    # --- Current picks ---
+    # Current picks
     if os.path.exists(CURRENT_PICKS_CSV):
         df_current = pd.read_csv(CURRENT_PICKS_CSV)
         duplicate = ((df_current["date"] == record["date"]) &
@@ -108,16 +102,22 @@ def save_pick(row, ml, spread, ou):
         if not duplicate.any():
             df_current = pd.concat([df_current, pd.DataFrame([record])])
             df_current.to_csv(CURRENT_PICKS_CSV, index=False)
+            debug("Pick added to current picks")
+        else:
+            debug("Duplicate pick, skipped current picks")
     else:
         pd.DataFrame([record]).to_csv(CURRENT_PICKS_CSV, index=False)
+        debug("Current picks CSV created")
 
-    # --- Archive picks ---
+    # Archive picks
     if os.path.exists(ARCHIVE_PICKS_CSV):
         df_archive = pd.read_csv(ARCHIVE_PICKS_CSV)
         df_archive = pd.concat([df_archive, pd.DataFrame([record])])
         df_archive.to_csv(ARCHIVE_PICKS_CSV, index=False)
+        debug("Pick added to archive")
     else:
         pd.DataFrame([record]).to_csv(ARCHIVE_PICKS_CSV, index=False)
+        debug("Archive CSV created")
 
 # -----------------------------
 # Flask routes
@@ -126,6 +126,8 @@ def save_pick(row, ml, spread, ou):
 def whatsapp():
     df_games = load_games()
     incoming = request.values.get("Body", "").strip()
+    debug("Incoming message: " + incoming)
+
     resp = MessagingResponse()
     msg = resp.message()
 
