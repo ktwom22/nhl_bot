@@ -6,8 +6,6 @@ import requests
 import math
 from datetime import datetime, timedelta, timezone, date
 import os
-from dotenv import load_dotenv
-
 
 # =========================
 # CONFIG
@@ -15,10 +13,9 @@ from dotenv import load_dotenv
 AFC_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTvmRRSRI6w9jf34bTSkJZJKRYETRyxanPOKhsvfuOUQUt67OfzcyFycB1eBOp-THmtBpoCnfN5CM-d/pub?gid=0&single=true&output=csv"
 NFC_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTvmRRSRI6w9jf34bTSkJZJKRYETRyxanPOKhsvfuOUQUt67OfzcyFycB1eBOp-THmtBpoCnfN5CM-d/pub?gid=1030664158&single=true&output=csv"
 
-load_dotenv()
-ODDS_API_KEY = os.getenv("ODDS_API_KEY")
+ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
 if not ODDS_API_KEY:
-    raise RuntimeError("❌ ODDS_API_KEY not found")
+    raise RuntimeError("❌ ODDS_API_KEY not found in environment variables")
 
 SPORT = "americanfootball_nfl"
 REGIONS = "us"
@@ -37,21 +34,6 @@ TEAM_NAME_MAP = {
     "NY Giants": "New York Giants",
     "NY Jets": "New York Jets"
 }
-
-# =========================
-# TIME FILTER (UPCOMING GAMES THROUGH TUESDAY 05:00 UTC)
-# =========================
-def is_upcoming_slate(game_time_utc):
-    kickoff = datetime.fromisoformat(game_time_utc.replace("Z", "+00:00"))
-    now = datetime.now(timezone.utc)
-    weekday = now.weekday()
-    days_to_tuesday = (1 - weekday) % 7
-    tuesday_morning = (now + timedelta(days=days_to_tuesday)).replace(
-        hour=5, minute=0, second=0, microsecond=0
-    )
-    if tuesday_morning <= now:
-        tuesday_morning += timedelta(days=7)
-    return now <= kickoff <= tuesday_morning
 
 # =========================
 # HELPERS
@@ -102,12 +84,13 @@ def project_scores(home_stats, away_stats):
     return home_pts, away_pts
 
 def make_pick(df, game):
-    if not is_upcoming_slate(game["commence_time"]):
+    kickoff = datetime.fromisoformat(game["commence_time"].replace("Z","+00:00"))
+    if kickoff < datetime.now(timezone.utc):
         return None
     home = TEAM_NAME_MAP.get(game["home_team"], game["home_team"])
     away = TEAM_NAME_MAP.get(game["away_team"], game["away_team"])
-    home_stats = df[df.team == home]
-    away_stats = df[df.team == away]
+    home_stats = df[df.team==home]
+    away_stats = df[df.team==away]
     if home_stats.empty or away_stats.empty:
         return None
     home_stats = home_stats.iloc[0]
@@ -115,11 +98,11 @@ def make_pick(df, game):
     home_pts, away_pts = project_scores(home_stats, away_stats)
     home_spread = away_spread = total_line = None
     for market in game["bookmakers"][0]["markets"]:
-        if market["key"] == "spreads":
+        if market["key"]=="spreads":
             for o in market["outcomes"]:
-                if o["name"] == home: home_spread = o["point"]
-                elif o["name"] == away: away_spread = o["point"]
-        if market["key"] == "totals":
+                if o["name"]==home: home_spread=o["point"]
+                elif o["name"]==away: away_spread=o["point"]
+        if market["key"]=="totals":
             total_line = market["outcomes"][0]["point"]
     if home_spread is None or away_spread is None:
         return None
@@ -134,43 +117,31 @@ def make_pick(df, game):
         "ou_pick": ou_pick,
         "projected_home_points": home_pts,
         "projected_away_points": away_pts,
-        "projected_total": round(home_pts+away_pts, 1)
+        "projected_total": round(home_pts+away_pts,1)
     }
 
-# =========================
-# RUN & ARCHIVE
-# =========================
 def run():
     df = load_team_stats()
     odds = get_odds()
-    picks = []
+    picks=[]
     for game in odds:
         pick = make_pick(df, game)
         if pick: picks.append(pick)
     current_week_df = pd.DataFrame(picks)
     current_week_df.to_csv(CURRENT_WEEK_FILE, index=False)
+    # Archive
     if os.path.exists(ARCHIVE_FILE):
         archive_df = pd.read_csv(ARCHIVE_FILE)
     else:
         archive_df = pd.DataFrame(columns=current_week_df.columns)
-    combined_df = pd.concat([archive_df, current_week_df], ignore_index=True)
-    combined_df = combined_df.drop_duplicates(subset="game", keep="last")
-    combined_df.to_csv(ARCHIVE_FILE, index=False)
+    combined_df = pd.concat([archive_df,current_week_df], ignore_index=True).drop_duplicates(subset="game", keep="last")
+    combined_df.to_csv(ARCHIVE_FILE,index=False)
     return current_week_df
 
 # =========================
-# FLASK BOT
+# FLASK APP
 # =========================
 app = Flask(__name__)
-
-def today():
-    return date.today().strftime("%Y-%m-%d")
-
-def load_current_week():
-    if os.path.exists(CURRENT_WEEK_FILE):
-        df = pd.read_csv(CURRENT_WEEK_FILE)
-        return df
-    return pd.DataFrame()
 
 def normalize(x):
     return str(x).lower().strip()
@@ -178,14 +149,16 @@ def normalize(x):
 def find_pick(df, team):
     team = normalize(team)
     for _, r in df.iterrows():
-        if team in normalize(r["game"]):
+        game_lower = normalize(r["game"])
+        home, away = game_lower.split(" @ ")
+        if team in home or team in away:
             return r
     return None
 
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp():
-    incoming = request.values.get("Body", "")
-    df = load_current_week()
+    incoming = request.values.get("Body","")
+    df = pd.read_csv(CURRENT_WEEK_FILE) if os.path.exists(CURRENT_WEEK_FILE) else pd.DataFrame()
     resp = MessagingResponse()
     msg = resp.message()
     if df.empty:
@@ -196,7 +169,7 @@ def whatsapp():
         msg.body("Team not found. Try Patriots, Chiefs, Packers, etc.")
         return str(resp)
     msg.body(
-        f"🏈 NFL PICK ({today()})\n\n"
+        f"🏈 NFL PICK ({date.today().strftime('%Y-%m-%d')})\n\n"
         f"{pick['game']}\n"
         f"💰 ML Spread: {pick['spread_pick']}\n"
         f"⚖️ O/U: {pick['ou_pick']}\n"
@@ -219,7 +192,8 @@ def archive():
 # =========================
 # MAIN
 # =========================
-if __name__ == "__main__":
+if __name__=="__main__":
     results = run()
     print(results)
-    app.run(host="0.0.0.0", port=10000)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
